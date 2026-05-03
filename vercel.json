@@ -1,5 +1,9 @@
 {
   "buildCommand": "npm install",
-  "devCommand": "node api/index.js",
-  "outputDirectory": "."
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
+  ]
 }
