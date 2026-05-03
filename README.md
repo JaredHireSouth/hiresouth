@@ -1,0 +1,18 @@
+{
+  "name": "hiresouth-backend",
+  "version": "1.0.0",
+  "description": "HireSouth recruitment platform backend",
+  "main": "api/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node api/index.js",
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.38.0",
+    "anthropic": "^0.20.0",
+    "dotenv": "^16.3.1"
+  }
+}

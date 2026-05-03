@@ -1,0 +1,99 @@
+# HireSouth Deployment Guide
+
+## Prerequisites
+- GitHub account (free)
+- Vercel account (free, sign in with GitHub)
+- Supabase account (already created)
+- Anthropic API key
+
+## Step 1: Set Up Supabase Database
+
+1. Go to [supabase.com](https://supabase.com) and log in
+2. Select your project "hiresouth"
+3. Go to **SQL Editor** → Click **New Query**
+4. Paste the entire contents of `supabase-setup.sql`
+5. Click **Run**
+6. Wait for tables to be created (2-3 seconds)
+
+## Step 2: Prepare GitHub Repository
+
+1. Create a new GitHub repository called "hiresouth"
+2. Clone it locally:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/hiresouth.git
+   cd hiresouth
+   ```
+
+3. Copy all files from this folder into the repo:
+   ```bash
+   cp -r /home/claude/hiresouth-backend/* .
+   ```
+
+4. Create a `.env.local` file with your actual values:
+   ```
+   ANTHROPIC_API_KEY=sk-ant-YOUR_KEY_HERE
+   SUPABASE_URL=https://uhuzvitagjkoqymbhote.supabase.co
+   SUPABASE_ANON_KEY=sb_publishable_uYmmHSFTjDhprcOzn17Cig_jbcdWmuz
+   ```
+
+5. Push to GitHub:
+   ```bash
+   git add .
+   git commit -m "Initial HireSouth backend setup"
+   git push origin main
+   ```
+
+## Step 3: Deploy to Vercel
+
+1. Go to [vercel.com](https://vercel.com) and log in with GitHub
+2. Click **Add New → Project**
+3. Select your **hiresouth** repository
+4. Vercel will auto-detect the setup
+5. Add Environment Variables:
+   - Click **Environment Variables**
+   - Add your three env vars (same as `.env.local`)
+6. Click **Deploy**
+7. Wait 2-3 minutes for deployment to finish
+8. You'll get a URL like: `https://hiresouth-xyz.vercel.app`
+
+## Step 4: Update Frontend to Use Backend
+
+Replace the `callClaude` function in your HTML with:
+
+```javascript
+async function callClaude(body) {
+  const apiUrl = 'https://YOUR_VERCEL_URL/api/messages'; // Replace with your deployed URL
+  const res = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+```
+
+## Step 5: Test It
+
+1. Go to your Vercel URL in a browser
+2. Add a candidate with a resume upload
+3. Generate a profile
+4. Run AI screening
+
+Everything should work — data saves to Supabase, API calls go through your backend.
+
+## Troubleshooting
+
+**"Cannot find module"** → Run `npm install` locally first
+**"SUPABASE_URL undefined"** → Check `.env.local` has all three env vars set in Vercel
+**"Deployment failed"** → Check GitHub has all files pushed, Vercel logs show error
+
+## Scaling Up
+
+Once working:
+- Add user authentication (Supabase Auth)
+- Add team management (share data between users)
+- Add email notifications (Resend or SendGrid)
+- Custom domain (Vercel domains)
+
+For any issues, check Vercel logs: Dashboard → Deployment → Logs
