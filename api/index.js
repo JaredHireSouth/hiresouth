@@ -1792,7 +1792,10 @@ Return: {"overall":85,"skills":80,"experience":78,"culture":82,"summary":"2-3 se
     res.json(result);
   } catch (err) {
     console.error('Screening error:', err);
-    res.status(500).json({ error: err.message });
+  const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`HireSouth backend running on port ${PORT}`);
+});
   }
 });
 
