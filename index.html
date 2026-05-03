@@ -1,0 +1,570 @@
+import express from 'express';
+import cors from 'cors';
+import { createClient } from '@supabase/supabase-js';
+import Anthropic from '@anthropic-ai/sdk';
+import dotenv from 'dotenv';
+
+dotenv.config({ path: '.env.local' });
+
+const app = express();
+app.use(cors());
+app.use(express.json({ limit: '50mb' }));
+
+// Initialize Supabase
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_ANON_KEY
+);
+
+// Initialize Anthropic
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY
+});
+
+// ── HEALTH CHECK ────────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'HireSouth backend is running' });
+});
+
+// ── RESUME PARSING ──────────────────────────────────────────────
+app.post('/api/parse-resume', async (req, res) => {
+  try {
+    const { base64, mediaType } = req.body;
+    if (!base64 || !mediaType) {
+      return res.status(400).json({ error: 'Missing base64 or mediaType' });
+    }
+
+    const prompt = `Extract all candidate information from this resume and return JSON only — no markdown, no extra text.
+Return ONLY this JSON (use "" for any field not found):
+{"firstName":"","lastName":"","email":"","phone":"","title":"most recent job title","location":"city, state or country","seniority":"Junior or Senior or Director or VP or C-Suite","linkedin":"","skills":"comma separated key skills","education":"degree, institution, year","languages":"languages and levels","role1":"Most recent: Title, Company, Dates. Key achievements in 2-3 sentences.","role2":"Previous: Title, Company, Dates. Key achievements in 1-2 sentences.","availability":""}`;
+
+    const message = await anthropic.messages.create({
+      model: 'claude-haiku-4-5-20251001',
+      max_tokens: 1200,
+      messages: [{
+        role: 'user',
+        content: [
+          { type: 'document', source: { type: 'base64', media_type: mediaType, data: base64 } },
+          { type: 'text', text: prompt }
+        ]
+      }]
+    });
+
+    const raw = message.content.map(c => c.text || '').join('');
+    const parsed = JSON.parse(raw.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim());
+    res.json(parsed);
+  } catch (err) {
+    console.error('Parse error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── PROFILE GENERATION ──────────────────────────────────────────
+app.post('/api/generate-profile', async (req, res) => {
+  try {
+    const { candidate } = req.body;
+    if (!candidate) {
+      return res.status(400).json({ error: 'Missing candidate data' });
+    }
+
+    const prompt = `You are a recruitment consultant at HireSouth. Generate a candidate profile. Respond ONLY with valid JSON, no markdown.
+Name: ${candidate.firstName} ${candidate.lastName}, Title: ${candidate.title}, Location: ${candidate.location}, Seniority: ${candidate.seniority}, Availability: ${candidate.availability}, Source: ${candidate.source}
+Recent Role: ${candidate.role1 || 'Not provided'}, Previous Role: ${candidate.role2 || 'Not provided'}
+Skills: ${candidate.skills || 'Not provided'}, Education: ${candidate.education || 'Not provided'}, Languages: ${candidate.languages || 'Not provided'}
+Recruiter Notes: ${candidate.notes || 'Not provided'}
+Return: {"summary":"3-4 sentence professional third-person summary","highlights":"2-3 paragraph recruiter highlights","skills":[{"category":"Category","items":["skill"]}],"experience":[{"title":"Title","company":"Company","dates":"Dates","bullets":["achievement"]}],"education":"string","languages":"string"}`;
+
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 1000,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const raw = message.content.map(c => c.text || '').join('');
+    const profile = JSON.parse(raw.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim());
+    res.json(profile);
+  } catch (err) {
+    console.error('Profile generation error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── AI SCREENING ────────────────────────────────────────────────
+app.post('/api/screen-candidate', async (req, res) => {
+  try {
+    const { candidate, job } = req.body;
+    if (!candidate || !job) {
+      return res.status(400).json({ error: 'Missing candidate or job data' });
+    }
+
+    const prompt = `You are a recruitment consultant. Screen this candidate against the job description. Respond ONLY with JSON.
+Candidate: ${candidate.firstName} ${candidate.lastName}, ${candidate.title}, ${candidate.location}. Skills: ${candidate.skills}. ${candidate.role1 || ''} ${candidate.role2 || ''}
+Job: ${job.title} at ${job.client || job.location}. Requirements: ${job.requirements}. Description: ${job.description}
+Return: {"overall":85,"skills":80,"experience":78,"culture":82,"summary":"2-3 sentence overall assessment","strengths":["strength1","strength2","strength3"],"gaps":["gap1","gap2"],"recommendation":"Recommend or Consider or Pass"}`;
+
+    const message = await anthropic.messages.create({
+      model: 'claude-sonnet-4-6',
+      max_tokens: 600,
+      messages: [{ role: 'user', content: prompt }]
+    });
+
+    const raw = message.content.map(c => c.text || '').join('');
+    const result = JSON.parse(raw.replace(/^```json\s*/, '').replace(/\s*```$/, '').trim());
+    res.json(result);
+  } catch (err) {
+    console.error('Screening error:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── CANDIDATES ──────────────────────────────────────────────────
+app.get('/api/candidates', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('candidates')
+      .select('*')
+      .order('added', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/candidates', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('candidates')
+      .insert([req.body])
+      .select();
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/candidates/:id', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('candidates')
+      .update(req.body)
+      .eq('id', req.params.id)
+      .select();
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/candidates/:id', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('candidates')
+      .delete()
+      .eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── ROLES ──────────────────────────────────────────────────────
+app.get('/api/roles', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('roles')
+      .select('*')
+      .order('opened', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/roles', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('roles')
+      .insert([req.body])
+      .select();
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/roles/:id', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('roles')
+      .update(req.body)
+      .eq('id', req.params.id)
+      .select();
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/roles/:id', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('roles')
+      .delete()
+      .eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── JOBS ───────────────────────────────────────────────────────
+app.get('/api/jobs', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('jobs')
+      .select('*')
+      .order('added', { ascending: false });
+    if (error) throw error;
+    res.json(data || []);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/jobs', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('jobs')
+      .insert([req.body])
+      .select();
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/jobs/:id', async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('jobs')
+      .delete()
+      .eq('id', req.params.id);
+    if (error) throw error;
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ── START SERVER ────────────────────────────────────────────────
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`HireSouth backend running on port ${PORT}`);
+});
+
+# Anthropic API Key (get from https://console.anthropic.com)
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+
+# Supabase Project URL
+SUPABASE_URL=https://uhuzvitagjkoqymbhote.supabase.co
+
+# Supabase Anon Key
+SUPABASE_ANON_KEY=sb_publishable_uYmmHSFTjDhprcOzn17Cig_jbcdWmuz
+
+# HireSouth Deployment Guide
+
+## Prerequisites
+- GitHub account (free)
+- Vercel account (free, sign in with GitHub)
+- Supabase account (already created)
+- Anthropic API key
+
+## Step 1: Set Up Supabase Database
+
+1. Go to [supabase.com](https://supabase.com) and log in
+2. Select your project "hiresouth"
+3. Go to **SQL Editor** → Click **New Query**
+4. Paste the entire contents of `supabase-setup.sql`
+5. Click **Run**
+6. Wait for tables to be created (2-3 seconds)
+
+## Step 2: Prepare GitHub Repository
+
+1. Create a new GitHub repository called "hiresouth"
+2. Clone it locally:
+   ```bash
+   git clone https://github.com/YOUR_USERNAME/hiresouth.git
+   cd hiresouth
+   ```
+
+3. Copy all files from this folder into the repo:
+   ```bash
+   cp -r /home/claude/hiresouth-backend/* .
+   ```
+
+4. Create a `.env.local` file with your actual values:
+   ```
+   ANTHROPIC_API_KEY=sk-ant-YOUR_KEY_HERE
+   SUPABASE_URL=https://uhuzvitagjkoqymbhote.supabase.co
+   SUPABASE_ANON_KEY=sb_publishable_uYmmHSFTjDhprcOzn17Cig_jbcdWmuz
+   ```
+
+5. Push to GitHub:
+   ```bash
+   git add .
+   git commit -m "Initial HireSouth backend setup"
+   git push origin main
+   ```
+
+## Step 3: Deploy to Vercel
+
+1. Go to [vercel.com](https://vercel.com) and log in with GitHub
+2. Click **Add New → Project**
+3. Select your **hiresouth** repository
+4. Vercel will auto-detect the setup
+5. Add Environment Variables:
+   - Click **Environment Variables**
+   - Add your three env vars (same as `.env.local`)
+6. Click **Deploy**
+7. Wait 2-3 minutes for deployment to finish
+8. You'll get a URL like: `https://hiresouth-xyz.vercel.app`
+
+## Step 4: Update Frontend to Use Backend
+
+Replace the `callClaude` function in your HTML with:
+
+```javascript
+async function callClaude(body) {
+  const apiUrl = 'https://YOUR_VERCEL_URL/api/messages'; // Replace with your deployed URL
+  const res = await fetch(apiUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+```
+
+## Step 5: Test It
+
+1. Go to your Vercel URL in a browser
+2. Add a candidate with a resume upload
+3. Generate a profile
+4. Run AI screening
+
+Everything should work — data saves to Supabase, API calls go through your backend.
+
+## Troubleshooting
+
+**"Cannot find module"** → Run `npm install` locally first
+**"SUPABASE_URL undefined"** → Check `.env.local` has all three env vars set in Vercel
+**"Deployment failed"** → Check GitHub has all files pushed, Vercel logs show error
+
+## Scaling Up
+
+Once working:
+- Add user authentication (Supabase Auth)
+- Add team management (share data between users)
+- Add email notifications (Resend or SendGrid)
+- Custom domain (Vercel domains)
+
+For any issues, check Vercel logs: Dashboard → Deployment → Logs
+
+{
+  "name": "hiresouth-backend",
+  "version": "1.0.0",
+  "description": "HireSouth recruitment platform backend",
+  "main": "api/index.js",
+  "type": "module",
+  "scripts": {
+    "dev": "node api/index.js",
+    "start": "node api/index.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "@supabase/supabase-js": "^2.38.0",
+    "anthropic": "^0.20.0",
+    "dotenv": "^16.3.1"
+  }
+}
+
+# HireSouth - Recruitment Platform
+
+A full-stack recruitment management platform with AI-powered resume parsing, candidate profile generation, and intelligent job matching.
+
+## Architecture
+
+**Frontend**: Static HTML/JavaScript (hosted on Vercel or any CDN)
+**Backend**: Node.js/Express (hosted on Vercel)
+**Database**: Supabase (PostgreSQL in the cloud)
+**AI**: Anthropic Claude API
+
+## Quick Start
+
+### Local Development
+
+1. Install dependencies:
+   ```bash
+   npm install
+   ```
+
+2. Create `.env.local`:
+   ```bash
+   cp .env.local.example .env.local
+   # Edit with your actual keys
+   ```
+
+3. Set up Supabase tables:
+   - Go to Supabase SQL Editor
+   - Run contents of `supabase-setup.sql`
+
+4. Start backend:
+   ```bash
+   npm run dev
+   ```
+   Backend runs on `http://localhost:3000`
+
+5. Open the frontend HTML in your browser
+
+### Deployment to Vercel
+
+See `DEPLOYMENT.md` for complete step-by-step instructions.
+
+## Features
+
+- **Resume Upload & Parsing** — Upload PDF/Word resumes, AI extracts candidate data
+- **Profile Generation** — Auto-generate branded HS profiles with interview highlights
+- **AI Candidate Screening** — Score candidates against job requirements
+- **Pipeline Management** — Kanban board (Sourced → Profiled → Sent → Placed)
+- **Open Roles Tracker** — Manage active roles and pipeline status
+- **JD Library** — Save job descriptions for AI screening
+- **Team Profiles** — Support multiple team members (CEO, SMO, Recruiter)
+- **Settings** — Store API keys and company info
+
+## API Endpoints
+
+### AI Features
+- `POST /api/parse-resume` — Extract candidate data from resume
+- `POST /api/generate-profile` — Generate HS profile for candidate
+- `POST /api/screen-candidate` — Score candidate against job
+
+### CRUD Operations
+- `GET /api/candidates` — List all candidates
+- `POST /api/candidates` — Create candidate
+- `PUT /api/candidates/:id` — Update candidate
+- `DELETE /api/candidates/:id` — Delete candidate
+
+Similar endpoints for `/api/roles` and `/api/jobs`
+
+## Environment Variables
+
+```
+ANTHROPIC_API_KEY    # Your Anthropic API key (sk-ant-...)
+SUPABASE_URL         # Your Supabase project URL
+SUPABASE_ANON_KEY    # Your Supabase anon key
+```
+
+## Stack
+
+- **Express.js** — REST API backend
+- **Supabase** — PostgreSQL database + auth
+- **Anthropic Claude** — AI for parsing, generation, screening
+- **CORS** — Allow frontend requests
+- **dotenv** — Environment variables
+
+## License
+
+MIT
+
+-- Create candidates table
+CREATE TABLE candidates (
+  id TEXT PRIMARY KEY,
+  firstName TEXT NOT NULL,
+  lastName TEXT NOT NULL,
+  title TEXT,
+  location TEXT,
+  email TEXT,
+  phone TEXT,
+  source TEXT,
+  seniority TEXT,
+  availability TEXT,
+  linkedin TEXT,
+  other TEXT,
+  role1 TEXT,
+  role2 TEXT,
+  skills TEXT,
+  education TEXT,
+  languages TEXT,
+  notes TEXT,
+  stage TEXT DEFAULT 'sourced',
+  score INT,
+  profileSent BOOLEAN DEFAULT false,
+  added TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create roles table
+CREATE TABLE roles (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  client TEXT,
+  status TEXT DEFAULT 'Sourcing',
+  priority TEXT DEFAULT 'None',
+  opened TEXT,
+  deadline TEXT,
+  salary TEXT,
+  location TEXT,
+  url TEXT,
+  email TEXT,
+  musthave TEXT,
+  notes TEXT,
+  description TEXT,
+  activeCandidates INT DEFAULT 0,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create jobs table
+CREATE TABLE jobs (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  location TEXT,
+  type TEXT,
+  client TEXT,
+  salary TEXT,
+  description TEXT,
+  requirements TEXT,
+  active BOOLEAN DEFAULT true,
+  added TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create profiles table
+CREATE TABLE profiles (
+  id TEXT PRIMARY KEY,
+  candidate_id TEXT NOT NULL REFERENCES candidates(id) ON DELETE CASCADE,
+  summary TEXT,
+  highlights TEXT,
+  skills JSONB,
+  experience JSONB,
+  education TEXT,
+  languages TEXT,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
+-- Create indexes for faster queries
+CREATE INDEX idx_candidates_stage ON candidates(stage);
+CREATE INDEX idx_candidates_source ON candidates(source);
+CREATE INDEX idx_roles_status ON roles(status);
+CREATE INDEX idx_jobs_active ON jobs(active);
+CREATE INDEX idx_profiles_candidate ON profiles(candidate_id);
